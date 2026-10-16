@@ -1,0 +1,12 @@
+
+# Core dependencies
+loguru
+tqdm
+opencv-python-headless
+tabulate
+psutil
+tensorboard
+pycocotools>=2.0.2
+
+# Optional: model profiling
+thop
