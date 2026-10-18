@@ -82,10 +82,15 @@ class Trainer:
             self.after_train()
 
     def train_in_epoch(self):
+        self.stop_training = False
+
         for self.epoch in range(self.start_epoch, self.max_epoch):
             self.before_epoch()
             self.train_in_iter()
             self.after_epoch()
+
+            if self.stop_training:
+                break
 
     def train_in_iter(self):
         for self.iter in range(self.max_iter):
@@ -343,7 +348,90 @@ class Trainer:
 
         return model
 
+    def calculate_val_loss(self):
+        """Calculate validation loss using real validation labels."""
+        from yolox.data import COCODataset, TrainTransform
+
+        dataset = COCODataset(
+            data_dir=self.exp.data_dir,
+            json_file=self.exp.val_ann,
+            name="val2017",
+            img_size=self.exp.input_size,
+            preproc=TrainTransform(
+                max_labels=120,
+                flip_prob=0.0,
+                hsv_prob=0.0,
+            ),
+        )
+
+        loader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=self.args.batch_size,
+            shuffle=False,
+            num_workers=self.exp.data_num_workers,
+            pin_memory=True,
+        )
+
+        model = self.ema_model.ema if self.use_model_ema else self.model
+        if is_parallel(model):
+            model = model.module
+
+        was_training = model.training
+        model.train()
+
+        # Keep BatchNorm statistics unchanged during validation.
+        for module in model.modules():
+            if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+                module.eval()
+
+        total_loss = 0.0
+        total_images = 0
+
+        try:
+            with torch.no_grad():
+                for imgs, targets, _, _ in loader:
+                    imgs = imgs.to(self.device, dtype=self.data_type)
+                    targets = targets.to(self.device, dtype=self.data_type)
+
+                    imgs, targets = self.exp.preprocess(
+                        imgs, targets, self.input_size
+                    )
+
+                    with torch.cuda.amp.autocast(enabled=self.amp_training):
+                        outputs = model(imgs, targets)
+
+                    batch_size = imgs.shape[0]
+                    total_loss += outputs["total_loss"].item() * batch_size
+                    total_images += batch_size
+        finally:
+            model.train(was_training)
+
+        return total_loss / max(total_images, 1)
+
+
     def evaluate_and_save_model(self):
+        val_loss = self.calculate_val_loss()
+
+        if self.rank == 0:
+            logger.info(
+                f"Epoch {self.epoch + 1}: val_loss={val_loss:.6f}"
+            )
+
+            if self.args.logger == "tensorboard":
+                self.tblogger.add_scalar(
+                    "val/loss", val_loss, self.epoch + 1
+                )
+
+        # Check early stopping only every 15 epochs.
+        current_epoch = self.epoch + 1
+        if current_epoch % 15 == 0 and val_loss <= 0.1:
+            logger.info(
+                f"Early stopping: val_loss={val_loss:.6f} "
+                f"at epoch {current_epoch}"
+            )
+            self.stop_training = True
+ 
+
         if self.use_model_ema:
             evalmodel = self.ema_model.ema
         else:
