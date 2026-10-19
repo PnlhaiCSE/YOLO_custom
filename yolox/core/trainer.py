@@ -36,6 +36,11 @@ from yolox.utils import (
 
 class Trainer:
     def __init__(self, exp: Exp, args):
+        self.es_patience = 15       # số epoch chờ
+        self.es_min_delta = 0.1     # val_loss phải giảm ít nhất 0.1 mới tính là cải thiện
+        self.es_best = float("inf")
+        self.es_last_improve = 0
+
         # init function only defines some basic attr, other attrs like model, optimizer are built in
         # before_train methods.
         self.exp = exp
@@ -422,15 +427,26 @@ class Trainer:
                     "val/loss", val_loss, self.epoch + 1
                 )
 
-        # Check early stopping only every 15 epochs.
-        current_epoch = self.epoch + 1
-        if current_epoch % 15 == 0 and val_loss <= 0.1:
-            logger.info(
-                f"Early stopping: val_loss={val_loss:.6f} "
-                f"at epoch {current_epoch}"
-            )
+        # Early stopping: dừng nếu val_loss không giảm thêm >= es_min_delta
+        # trong es_patience epoch liên tiếp.
+        cur_epoch = self.epoch + 1
+        if val_loss < self.es_best - self.es_min_delta:
+            self.es_best = val_loss
+            self.es_last_improve = cur_epoch
+
+        stop = (cur_epoch - self.es_last_improve) >= self.es_patience
+        if self.is_distributed:
+            flag = torch.tensor([int(stop)], device=self.device)
+            torch.distributed.broadcast(flag, src=0)  # cả 2 GPU cùng quyết định
+            stop = bool(flag.item())
+        if stop:
+            if self.rank == 0:
+                logger.info(
+                    f"Early stopping at epoch {cur_epoch}: val_loss không giảm quá "
+                    f"{self.es_min_delta} trong {self.es_patience} epoch "
+                    f"(best {self.es_best:.4f} ở epoch {self.es_last_improve})"
+                )
             self.stop_training = True
- 
 
         if self.use_model_ema:
             evalmodel = self.ema_model.ema
