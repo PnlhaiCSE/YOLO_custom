@@ -298,6 +298,7 @@ class COCOEvaluator:
                 logger.warning("Use standard COCOeval.")
 
             cocoEval = COCOeval(cocoGt, cocoDt, annType[1])
+            cocoEval.params.maxDets = [1, 10, 200]
             cocoEval.evaluate()
             cocoEval.accumulate()
             redirect_string = io.StringIO()
