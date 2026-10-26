@@ -5,6 +5,7 @@ import datetime
 import os
 import time
 from loguru import logger
+import wandb
 
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -68,6 +69,18 @@ class Trainer:
 
         if self.rank == 0:
             os.makedirs(self.file_name, exist_ok=True)
+            wandb.init(
+                project="yolox-human",
+                name="yolox-s-lr-001",
+                config={
+                    "model": "YOLOX-S",
+                    "num_classes": 1,
+                    "batch_size": self.args.batch_size,
+                    "max_epoch": self.max_epoch,
+                    "input_size": 640,
+                    "basic_lr_per_img": self.basic_lr_per_img,
+                },
+            )
 
         setup_logger(
             self.file_name,
@@ -76,6 +89,7 @@ class Trainer:
             mode="a",
         )
 
+   
     def train(self):
         self.before_train()
         try:
